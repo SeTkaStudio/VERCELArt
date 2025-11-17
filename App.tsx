@@ -6,7 +6,8 @@ import { ImageModal } from './components/ImageModal';
 import { ToggleSwitch } from './components/ToggleSwitch';
 import { AddToFavoritesModal } from './components/AddToFavoritesModal';
 import { ImageFile, OutputMode, GeneratedImage, ResolutionOption, ShotType, ClothingOption, AdapterBackgroundOption } from './types';
-import { RESOLUTION_OPTIONS, VARIATION_PROMPTS, BASE_PROMPT, RESOLUTION_PROMPT_MAP, SHOT_TYPE_OPTIONS, SHOT_TYPE_PROMPT_MAP, CLOTHING_OPTIONS, CLOTHING_PROMPT_MAP, ADAPTER_BACKGROUND_OPTIONS, ADAPTER_BACKGROUND_PROMPT_MAP } from './constants';
+// --- ИЗМЕНЕНИЕ 1: Импортируем полный список моделей и OHMYGPT_MODELS ---
+import { RESOLUTION_OPTIONS, VARIATION_PROMPTS, BASE_PROMPT, RESOLUTION_PROMPT_MAP, SHOT_TYPE_OPTIONS, SHOT_TYPE_PROMPT_MAP, CLOTHING_OPTIONS, CLOTHING_PROMPT_MAP, ADAPTER_BACKGROUND_OPTIONS, ADAPTER_BACKGROUND_PROMPT_MAP, PHOTO_GENERATION_MODELS, OHMYGPT_MODELS } from './constants';
 import { generatePortrait, generateImageWithOhMyGPT } from './services/geminiService';
 import { useAuth } from './contexts/AuthContext';
 
@@ -39,12 +40,19 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
     const [clothingFile, setClothingFile] = useState<ImageFile | null>(null);
     const isGenerationCancelled = useRef(false);
 
+    // --- ДОБАВЛЕННОЕ СОСТОЯНИЕ ДЛЯ ВЫБОРА МОДЕЛИ ---
+    const [generationModel, setGenerationModel] = useState(PHOTO_GENERATION_MODELS[0].id); 
+
     const { currentUser, decrementCredits, removeFavorite, isFavorite } = useAuth();
     const [creditError, setCreditError] = useState('');
     const [imageToFavorite, setImageToFavorite] = useState<string | null>(null);
 
-    // Стоимость генерации 0, если используется общий API ключ
-    const generationCost = currentUser?.paymentMethod === 'apiKey' ? 0 : VARIATION_PROMPTS[outputMode].length;
+    // --- ЛОГИКА ВЫБОРА API И СТОИМОСТИ ---
+    const isOhMyGptModel = OHMYGPT_MODELS.some(m => m.id === generationModel);
+    
+    // Стоимость генерации 0, если используется общий API ключ и модель OhMyGPT
+    const generationCost = (isOhMyGptModel && currentUser?.paymentMethod === 'apiKey') ? 0 : VARIATION_PROMPTS[outputMode].length;
+    // ------------------------------------
 
     const buildPrompt = useCallback((variationText: string) => {
         let backgroundPromptPart = '';
@@ -74,13 +82,14 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
 
     const handleSubmit = useCallback(async () => {
         if (!imageFile || !currentUser) return;
-        if (currentUser.paymentMethod === 'credits' && currentUser.credits < generationCost) {
+        
+        // Проверка кредитов: только если НЕ OhMyGPT или НЕ общий ключ
+        if (!isOhMyGptModel && currentUser.paymentMethod === 'credits' && currentUser.credits < generationCost) {
             setCreditError(`Недостаточно кредитов. Требуется: ${generationCost}, у вас: ${currentUser.credits}`);
             return;
         }
-        // --- ПРОВЕРКА НАЛИЧИЯ КЛЮЧА ИЗ ПРОФИЛЯ УДАЛЕНА ---
 
-        if (currentUser.paymentMethod === 'credits') {
+        if (!isOhMyGptModel && currentUser.paymentMethod === 'credits') {
             const creditsDecremented = await decrementCredits(generationCost);
             if (!creditsDecremented) {
                 setCreditError('Не удалось списать кредиты. Попробуйте снова.');
@@ -103,8 +112,8 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
         }));
         setImages(newImages);
 
-        // apiKey используется только для режима "credits" (Gemini/Imagen), для OhMyGPT он не нужен
-        const apiKey = currentUser.paymentMethod === 'apiKey' ? undefined : currentUser.apiKey; 
+        // Ключ API нужен только для моделей Google, когда используется оплата кредитами
+        const apiKey = isOhMyGptModel ? undefined : currentUser.apiKey; 
 
         for (const variation of variations) {
             if (isGenerationCancelled.current) break;
@@ -112,11 +121,11 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
                 const fullPrompt = buildPrompt(variation.text);
                 let resultSrc: string;
 
-                if (currentUser.paymentMethod === 'apiKey') {
-                    // Используем OhMyGPT через безопасный прокси (общий ключ на сервере)
-                    resultSrc = await generateImageWithOhMyGPT(fullPrompt, 'dall-e');
+                if (isOhMyGptModel) {
+                    // ИСПОЛЬЗУЕМ OHMYGPT (через прокси, общий ключ)
+                    resultSrc = await generateImageWithOhMyGPT(fullPrompt, generationModel); 
                 } else {
-                    // Используем Google Gemini/Imagen
+                    // ИСПОЛЬЗУЕМ GOOGLE GEMINI/IMAGEN
                     resultSrc = await generatePortrait(imageFile, fullPrompt, backgroundFile, clothingFile, apiKey);
                 }
                 
@@ -130,7 +139,7 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
         }
 
         setIsLoading(false);
-    }, [imageFile, resolution, outputMode, buildPrompt, backgroundFile, clothingFile, currentUser, decrementCredits, generationCost, setImages]);
+    }, [imageFile, resolution, outputMode, buildPrompt, backgroundFile, clothingFile, currentUser, decrementCredits, generationCost, setImages, isOhMyGptModel, generationModel]);
 
     const handleStopGeneration = () => {
         isGenerationCancelled.current = true;
@@ -142,13 +151,15 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
         const imageToRegen = images.find(img => img.id === imageId);
         if (!imageToRegen || !imageFile || !currentUser) return;
 
-        if (currentUser.paymentMethod === 'credits' && currentUser.credits < 1) {
+        // Определяем, является ли модель, которую нужно перегенерировать, моделью OhMyGPT
+        const isOhMyGptModelRegen = OHMYGPT_MODELS.some(m => m.id === imageToRegen.resolution); 
+        
+        if (!isOhMyGptModelRegen && currentUser.paymentMethod === 'credits' && currentUser.credits < 1) {
             alert("Недостаточно кредитов для перегенерации.");
             return;
         }
-        // --- ПРОВЕРКА НАЛИЧИЯ КЛЮЧА ИЗ ПРОФИЛЯ УДАЛЕНА ---
         
-        if (currentUser.paymentMethod === 'credits') {
+        if (!isOhMyGptModelRegen && currentUser.paymentMethod === 'credits') {
             const creditsDecremented = await decrementCredits(1);
             if (!creditsDecremented) {
                 alert("Не удалось списать кредиты. Попробуйте снова.");
@@ -157,14 +168,14 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
         }
 
         setImages(prev => prev.map(img => img.id === imageId ? { ...img, status: 'pending' } : img));
-        const apiKey = currentUser.paymentMethod === 'apiKey' ? undefined : currentUser.apiKey;
+        const apiKey = isOhMyGptModelRegen ? undefined : currentUser.apiKey;
 
         try {
             let resultSrc: string;
             
-            if (currentUser.paymentMethod === 'apiKey') {
+            if (isOhMyGptModelRegen) {
                 // Используем OhMyGPT через безопасный прокси
-                resultSrc = await generateImageWithOhMyGPT(imageToRegen.prompt, 'dall-e');
+                resultSrc = await generateImageWithOhMyGPT(imageToRegen.prompt, imageToRegen.resolution); 
             } else {
                 // Используем Google Gemini/Imagen
                 resultSrc = await generatePortrait(imageFile, imageToRegen.prompt, backgroundFile, clothingFile, apiKey);
@@ -205,8 +216,7 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
         });
     };
 
-    // --- ОБНОВЛЕНО: isSubmitDisabled теперь не проверяет личный API-ключ ---
-    const isSubmitDisabled = !imageFile || isLoading || (currentUser?.paymentMethod === 'credits' && (currentUser?.credits ?? 0) < generationCost);
+    const isSubmitDisabled = !imageFile || isLoading || (!isOhMyGptModel && currentUser?.paymentMethod === 'credits' && (currentUser?.credits ?? 0) < generationCost);
 
     return (
         <div className="min-h-screen bg-brand-primary flex flex-col md:flex-row">
@@ -256,6 +266,14 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
                         options={RESOLUTION_OPTIONS}
                         value={resolution}
                         onChange={setResolution}
+                    />
+
+                    {/* --- ДОБАВЛЕН ВЫБОР МОДЕЛИ ГЕНЕРАЦИИ --- */}
+                    <SelectInput
+                        label="Модель генерации"
+                        options={PHOTO_GENERATION_MODELS.map(m => ({ value: m.id, label: m.name }))}
+                        value={generationModel}
+                        onChange={setGenerationModel}
                     />
                 </div>
 
@@ -308,8 +326,8 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
                         <button onClick={handleSubmit} disabled={isSubmitDisabled} className="w-full bg-brand-accent text-brand-primary font-bold py-3 px-4 rounded-md hover:bg-amber-400 transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed">
                             {currentUser?.username === 'Admin'
                                 ? 'Сгенерировать'
-                                : currentUser?.paymentMethod === 'apiKey'
-                                    ? 'Сгенерировать (Общий API ключ)'
+                                : isOhMyGptModel && currentUser?.paymentMethod === 'apiKey'
+                                    ? `Сгенерировать (${generationModel} / Общий ключ)`
                                     : `Сгенерировать (${generationCost} ${generationCost === 1 ? 'кредит' : 'кредитов'})`
                             }
                         </button>
@@ -319,6 +337,7 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
                 </div>
             </aside>
 
+            {/* ... (остальной JSX) ... */}
             <main className="flex-1 bg-brand-primary">
                 <ImageGallery
                     title={outputMode}
