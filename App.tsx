@@ -7,7 +7,6 @@ import { ToggleSwitch } from './components/ToggleSwitch';
 import { AddToFavoritesModal } from './components/AddToFavoritesModal';
 import { ImageFile, OutputMode, GeneratedImage, ResolutionOption, ShotType, ClothingOption, AdapterBackgroundOption } from './types';
 import { RESOLUTION_OPTIONS, VARIATION_PROMPTS, BASE_PROMPT, RESOLUTION_PROMPT_MAP, SHOT_TYPE_OPTIONS, SHOT_TYPE_PROMPT_MAP, CLOTHING_OPTIONS, CLOTHING_PROMPT_MAP, ADAPTER_BACKGROUND_OPTIONS, ADAPTER_BACKGROUND_PROMPT_MAP } from './constants';
-// --- ИЗМЕНЕНИЕ 1: Добавление новой функции для OhMyGPT ---
 import { generatePortrait, generateImageWithOhMyGPT } from './services/geminiService';
 import { useAuth } from './contexts/AuthContext';
 
@@ -44,6 +43,7 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
     const [creditError, setCreditError] = useState('');
     const [imageToFavorite, setImageToFavorite] = useState<string | null>(null);
 
+    // Стоимость генерации 0, если используется общий API ключ
     const generationCost = currentUser?.paymentMethod === 'apiKey' ? 0 : VARIATION_PROMPTS[outputMode].length;
 
     const buildPrompt = useCallback((variationText: string) => {
@@ -78,10 +78,7 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
             setCreditError(`Недостаточно кредитов. Требуется: ${generationCost}, у вас: ${currentUser.credits}`);
             return;
         }
-        if (currentUser.paymentMethod === 'apiKey' && !currentUser.apiKey) {
-            setCreditError('Выбран способ оплаты "свой API ключ", но ключ не указан в профиле.');
-            return;
-        }
+        // --- ПРОВЕРКА НАЛИЧИЯ КЛЮЧА ИЗ ПРОФИЛЯ УДАЛЕНА ---
 
         if (currentUser.paymentMethod === 'credits') {
             const creditsDecremented = await decrementCredits(generationCost);
@@ -106,9 +103,9 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
         }));
         setImages(newImages);
 
-        const apiKey = currentUser.paymentMethod === 'apiKey' ? currentUser.apiKey : undefined;
+        // apiKey используется только для режима "credits" (Gemini/Imagen), для OhMyGPT он не нужен
+        const apiKey = currentUser.paymentMethod === 'apiKey' ? undefined : currentUser.apiKey; 
 
-        // --- ИЗМЕНЕНИЕ 2: Логика выбора API внутри цикла ---
         for (const variation of variations) {
             if (isGenerationCancelled.current) break;
             try {
@@ -116,12 +113,10 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
                 let resultSrc: string;
 
                 if (currentUser.paymentMethod === 'apiKey') {
-                    // Используем OhMyGPT через безопасный прокси
-                    // Используем модель 'dall-e' как модель по умолчанию. 
-                    // Примечание: OhMyGPT прокси не поддерживает дополнительные файлы (backgroundFile, clothingFile) в этой функции.
+                    // Используем OhMyGPT через безопасный прокси (общий ключ на сервере)
                     resultSrc = await generateImageWithOhMyGPT(fullPrompt, 'dall-e');
                 } else {
-                    // Используем Google Gemini/Imagen (старая логика)
+                    // Используем Google Gemini/Imagen
                     resultSrc = await generatePortrait(imageFile, fullPrompt, backgroundFile, clothingFile, apiKey);
                 }
                 
@@ -133,7 +128,6 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
             }
             if (variations.length > 1) await sleep(2500);
         }
-        // --------------------------------------------------------
 
         setIsLoading(false);
     }, [imageFile, resolution, outputMode, buildPrompt, backgroundFile, clothingFile, currentUser, decrementCredits, generationCost, setImages]);
@@ -152,11 +146,8 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
             alert("Недостаточно кредитов для перегенерации.");
             return;
         }
-        if (currentUser.paymentMethod === 'apiKey' && !currentUser.apiKey) {
-            alert('Выбран способ оплаты "свой API ключ", но ключ не указан в профиле.');
-            return;
-        }
-
+        // --- ПРОВЕРКА НАЛИЧИЯ КЛЮЧА ИЗ ПРОФИЛЯ УДАЛЕНА ---
+        
         if (currentUser.paymentMethod === 'credits') {
             const creditsDecremented = await decrementCredits(1);
             if (!creditsDecremented) {
@@ -166,9 +157,8 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
         }
 
         setImages(prev => prev.map(img => img.id === imageId ? { ...img, status: 'pending' } : img));
-        const apiKey = currentUser.paymentMethod === 'apiKey' ? currentUser.apiKey : undefined;
+        const apiKey = currentUser.paymentMethod === 'apiKey' ? undefined : currentUser.apiKey;
 
-        // --- ИЗМЕНЕНИЕ 3: Логика выбора API для перегенерации ---
         try {
             let resultSrc: string;
             
@@ -176,7 +166,7 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
                 // Используем OhMyGPT через безопасный прокси
                 resultSrc = await generateImageWithOhMyGPT(imageToRegen.prompt, 'dall-e');
             } else {
-                // Используем Google Gemini/Imagen (старая логика)
+                // Используем Google Gemini/Imagen
                 resultSrc = await generatePortrait(imageFile, imageToRegen.prompt, backgroundFile, clothingFile, apiKey);
             }
 
@@ -185,7 +175,6 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
             console.error(`Failed to regenerate image ${imageId}:`, error);
             setImages(prev => prev.map(img => img.id === imageId ? { ...img, status: 'error' } : img));
         }
-        // ------------------------------------------------------------
     }, [images, imageFile, backgroundFile, clothingFile, currentUser, decrementCredits, setImages]);
 
     const handleDelete = (imageId: string) => {
@@ -216,7 +205,8 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
         });
     };
 
-    const isSubmitDisabled = !imageFile || isLoading || (currentUser?.paymentMethod === 'credits' && (currentUser?.credits ?? 0) < generationCost) || (currentUser?.paymentMethod === 'apiKey' && !currentUser?.apiKey);
+    // --- ОБНОВЛЕНО: isSubmitDisabled теперь не проверяет личный API-ключ ---
+    const isSubmitDisabled = !imageFile || isLoading || (currentUser?.paymentMethod === 'credits' && (currentUser?.credits ?? 0) < generationCost);
 
     return (
         <div className="min-h-screen bg-brand-primary flex flex-col md:flex-row">
@@ -319,7 +309,7 @@ const App: React.FC<AppProps> = ({ onNavigateHome, images, setImages }) => {
                             {currentUser?.username === 'Admin'
                                 ? 'Сгенерировать'
                                 : currentUser?.paymentMethod === 'apiKey'
-                                    ? 'Сгенерировать (свой API ключ)'
+                                    ? 'Сгенерировать (Общий API ключ)'
                                     : `Сгенерировать (${generationCost} ${generationCost === 1 ? 'кредит' : 'кредитов'})`
                             }
                         </button>
